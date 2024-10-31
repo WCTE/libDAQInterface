@@ -10,9 +10,16 @@ import time
 import signal
 import os
 import numpy as np
-import os
 import glob
-import pandas as pd
+from ftplib import FTP
+import re
+from datetime import datetime,timedelta
+import csv
+import time
+import signal
+control_panel = FTP("192.168.11.3","CERN1","12345")
+control_panel.cwd('CERN')
+
 
 def send_data(timestamp,variable_name_list,values):
   
@@ -71,7 +78,7 @@ def stable_operating(value_list,last_value_list):
 
 
 #                        2 , 3,  4, 5  , 6 ,           7 , 8 , 9 , 10, 11       12,13 ,14  ,15  ,16 ,       17, 18 , 19 , 20 , 21 ,      22,23,24,25,26,27      
-  threshold = np.array([0.5,0.5,0.5,0.5,0.5,          0.5,0.5,0.5,0.5,0.5,      0.2,0.2,0.2,0.2,0.1,         0.2,0.1,0.03,0.03,0.03,     0.5,0.05,1,5,5,0.3],dtype=float)
+  threshold = np.array([0.5,0.5,0.5,0.5,0.5,          0.5,0.5,0.5,0.5,0.5,      0.2,0.2,0.2,0.2,0.1,         0.2,0.1,0.03,0.03,0.03,     0.5,0.05,1,5,10,0.3],dtype=float)
 
   
   new_value=np.array(value_list[2:],dtype=float)
@@ -80,7 +87,7 @@ def stable_operating(value_list,last_value_list):
   #for i,name in enumerate(data_list):
      #print(i+1,name)
 
-  variable_changing_fast = np.abs(new_value-last_value)[0:-3]>threshold
+  variable_changing_fast = np.abs(new_value-last_value)[0:26]>threshold
   if variable_changing_fast.any():
      stable_flag=0
      for flag,name in zip(variable_changing_fast,data_list[2:]):
@@ -93,32 +100,36 @@ def stable_operating(value_list,last_value_list):
   return stable_flag
 
 
-def find_the_latest_valid_CSV(require_time,data_list):
+# def find_the_latest_valid_CSV(require_time,data_list):
   
-  value_list = []
-  valid_flag=1
+#   value_list = []
+#   valid_flag=1
 
-  for i in range(10):
-    local_file = '/home/wcte/water/FTP/data/' + (require_time-timedelta(seconds=i)).strftime("%Y%m%d_%H%M%S") + '.CSV'
-    #print(local_file)
-    if os.path.exists(local_file)==0:
-        valid_flag=0
-    else:
+#   for i in range(10):
+#     local_file = '/home/wcte/water/FTP/data/' + (require_time-timedelta(seconds=i)).strftime("%Y%m%d_%H%M%S") + '.CSV'
+#     #print(local_file)
+#     if os.path.exists(local_file)==0:
+#         valid_flag=0
+#     else:
       
-      with open(local_file, mode='r', newline='') as csvfile:
-        reader = csv.reader(csvfile)
-        for row in reader:
-          value_list.extend(row)
+#       with open(local_file, mode='r', newline='') as csvfile:
+#         reader = csv.reader(csvfile)
+#         for row in reader:
+#           value_list.extend(row)
 
-      if len(value_list)!=len(data_list) or bool(re.match('^\d{2}-\d{2}-\d{4}$',value_list[0]))!=1 or bool(re.match('^\d{2}:\d{2}:\d{2}$',value_list[1]))!=1:
-        valid_flag=0
+#       if len(value_list)!=len(data_list) or bool(re.match('^\d{2}-\d{2}-\d{4}$',value_list[0]))!=1 or bool(re.match('^\d{2}:\d{2}:\d{2}$',value_list[1]))!=1:
+#         valid_flag=0
       
-    if valid_flag==1:
-      return value_list
-    else:
-      continue
+#     if valid_flag==1:
+#       return value_list
+#     else:
+#       continue
 
-  return 0
+#   return 0
+
+
+
+
 
 
 def find_the_latest_valid_row(data_list):
@@ -140,11 +151,47 @@ def find_the_latest_valid_row(data_list):
   #print(value_list)
   if len(value_list)!=len(data_list) or bool(re.match(r'^\d{2}-\d{2}-\d{4}$',value_list[0]))!=1 or bool(re.match(r'^\d{2}:\d{2}:\d{2}$',value_list[1]))!=1:
       valid_flag=0
+  else:
+     for v in value_list:
+        if v=='':
+          return 0
   #print(len(value_list)!=len(data_list),bool(re.match(r'^\d{2}-\d{2}-\d{4}$',value_list[0]))!=1,bool(re.match(r'^\d{2}:\d{2}:\d{2}$',value_list[1]))!=1)
   if valid_flag==1:
     return value_list
   else:
     return 0
+
+
+def find_the_latest_remote_CSV(files):
+    csv_files = [file for file in files if file.lower().endswith('.csv')]
+    if not csv_files:
+        print("No CSV files found.")
+        return None
+    else:
+        return max(csv_files, key=lambda file: control_panel.sendcmd(f"MDTM {file}"))
+
+
+print("file list scanning")
+files = control_panel.nlst()
+latest_file = find_the_latest_remote_CSV(files)
+if latest_file is None:
+    print("No CSV files found.")
+else:
+    print("found the latest data")
+    latest_file_lines = []
+    control_panel.retrbinary(f'RETR {latest_file}', latest_file_lines.append)
+    if latest_file_lines:
+        first_line = latest_file_lines[0].decode().strip()
+        with open("data_format.CSV",mode='w',newline="") as f:
+            f.write(re.findall('^[^\n]*\n',first_line)[0])
+
+control_panel.quit()
+
+print("done")
+
+control_panel = FTP("192.168.11.3","CERN1","12345")
+control_panel.cwd('CERN')
+
 
 
 
@@ -222,6 +269,12 @@ last_alarm_rigister=format(0, '016b') + format(0, '016b')
 
 DAQ_inter.sc_vars["Status"].SetValue("Initializing")
 
+
+print("input S to start")
+input()
+print("Uploading data from PLC, Ctrl+C to stop")
+
+
 while running:
 
   if timer>65:
@@ -236,11 +289,33 @@ while running:
 
   # minute_and_hour_string = f"{hours:02}:{minutes:02}"
   # send_flag = (seconds>=59) & (minute_and_hour_string in time_points)
-  
+  file_count = len(files)
+  files = control_panel.nlst()
+  if len(files) != file_count:
+      print("Checking for new remote file")
+      latest_file = find_the_latest_remote_CSV(files)
+
+  #request_time = datetime.now() + timedelta(hours=1) - timedelta(minutes=1,seconds=14)
+  #remote_file = 'CERN/'+request_time.strftime("%m%d%H")+'.CSV'
+  #remote_file = find_the_latest_remote_CSV()
+  local_file = 'data/' + latest_file
+
+  if latest_file is None:
+      print("Failed to find remote file...")
+  else:
+      #print(f"Getting data from {latest_file}, saving to {local_file}")
+      
+      
+      with open(local_file,mode='wb') as f:
+          control_panel.retrbinary(f'RETR {latest_file}', f.write)
+
+
+
+
   value_list = find_the_latest_valid_row(data_list)
   
   if value_list==0:
-    print("value list ==0")
+    print("latest data invalid. Ignore this second")
     time.sleep(1)
     timer = timer+1
     continue
@@ -255,10 +330,10 @@ while running:
   if stable_operating(value_list,last_value_list):
     send_threshold=60
   else:
-    send_threshold=2
+    send_threshold=5
   
   
-  alarm_register = format(int(value_list[-2]), '016b') + format(int(value_list[-3]), '016b')
+  alarm_register = format(int(value_list[29]), '016b') + format(int(value_list[28]), '016b')
 
 
   if timer>65:
@@ -284,6 +359,8 @@ while running:
 
      sending_value_list = value_list[10:28]
      sending_data_list = data_list[10:28]
+     sending_value_list.append(value_list[-1])
+     sending_data_list.append(data_list[-1])
      send_data(unix_timestamp_ms,sending_data_list,sending_value_list)
      timer=0
 
