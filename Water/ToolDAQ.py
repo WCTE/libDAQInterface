@@ -140,6 +140,10 @@ def find_the_latest_valid_row(data_list):
   #print(value_list)
   if len(value_list)!=len(data_list) or bool(re.match(r'^\d{2}-\d{2}-\d{4}$',value_list[0]))!=1 or bool(re.match(r'^\d{2}:\d{2}:\d{2}$',value_list[1]))!=1:
       valid_flag=0
+  else:
+    for v in value_list:
+      if v='':
+        valid_flag=0
   #print(len(value_list)!=len(data_list),bool(re.match(r'^\d{2}-\d{2}-\d{4}$',value_list[0]))!=1,bool(re.match(r'^\d{2}:\d{2}:\d{2}$',value_list[1]))!=1)
   if valid_flag==1:
     return value_list
@@ -240,7 +244,7 @@ while running:
   value_list = find_the_latest_valid_row(data_list)
   
   if value_list==0:
-    print("value list ==0")
+    print("latest data invalid. Ignoring data of this second")
     time.sleep(1)
     timer = timer+1
     continue
