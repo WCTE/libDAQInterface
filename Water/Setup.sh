@@ -1,4 +1,7 @@
 #!/bin/bash
+# Setup script for Mon-01 machine
+
+source /opt/root_v6.28.04/bin/thisroot.sh
 
 #Dependencies=`pwd`/Dependencies # Don't use this relative path'ing!
 Dependencies=/MonitoringToolChain/Dependencies
