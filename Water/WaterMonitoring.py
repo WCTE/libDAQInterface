@@ -1,26 +1,21 @@
 import time # for sleep
-import random # for random
 # import cppyy and ctypes for interaction with c++ entities
 import cppyy, cppyy.ll
 import ctypes
 import re
-from datetime import datetime,timedelta
-import csv
-import time
-import signal
+from datetime import datetime
 import os
 import numpy as np
 import glob
 from ftplib import FTP
-import re
-from datetime import datetime,timedelta
 import csv
-import time
 import signal
-control_panel = FTP("192.168.11.3","CERN1","12345")
-control_panel.cwd('CERN')
+import sys
 
+import requests
+import json
 
+#send data to ToolDAQ
 def send_data(timestamp,variable_name_list,values):
   
   # populate the monitoring Store
@@ -42,29 +37,14 @@ def send_data(timestamp,variable_name_list,values):
 
   return 0
 
-
+#exit information
 running=1
 def signal_handler(sig, frame):
     global running
     print("Data uploading stopped.")
     running = False
 
-
-def generate_time_intervals(interval):
-    times = []
-    current_hour = 0
-    current_minute = 0
-
-    while current_hour < 24:
-        times.append(f"{current_hour:02}:{current_minute:02}")
-        current_minute += interval
-        if current_minute >= 60:
-            current_hour += current_minute // 60
-            current_minute = current_minute % 60
-    
-    return times
-
-
+#check is the variavles are changing fast
 def stable_operating(value_list,last_value_list):
   
   stable_flag=1
@@ -99,39 +79,7 @@ def stable_operating(value_list,last_value_list):
 
   return stable_flag
 
-
-# def find_the_latest_valid_CSV(require_time,data_list):
-  
-#   value_list = []
-#   valid_flag=1
-
-#   for i in range(10):
-#     local_file = '/home/wcte/water/FTP/data/' + (require_time-timedelta(seconds=i)).strftime("%Y%m%d_%H%M%S") + '.CSV'
-#     #print(local_file)
-#     if os.path.exists(local_file)==0:
-#         valid_flag=0
-#     else:
-      
-#       with open(local_file, mode='r', newline='') as csvfile:
-#         reader = csv.reader(csvfile)
-#         for row in reader:
-#           value_list.extend(row)
-
-#       if len(value_list)!=len(data_list) or bool(re.match('^\d{2}-\d{2}-\d{4}$',value_list[0]))!=1 or bool(re.match('^\d{2}:\d{2}:\d{2}$',value_list[1]))!=1:
-#         valid_flag=0
-      
-#     if valid_flag==1:
-#       return value_list
-#     else:
-#       continue
-
-#   return 0
-
-
-
-
-
-
+#find the latest data from CSV
 def find_the_latest_valid_row(data_list):
   
   value_list = []
@@ -161,40 +109,113 @@ def find_the_latest_valid_row(data_list):
   else:
     return 0
 
+# FTP connection
+def get_ftp():
+    control_panel = FTP("192.168.11.3","CERN1","12345", timeout=5)
+    control_panel.cwd('CERN')
+    return control_panel
 
+control_panel = get_ftp()
+
+#find the latest PLC CSV
 def find_the_latest_remote_CSV(files):
-    csv_files = [file for file in files if file.lower().endswith('.csv')]
-    if not csv_files:
-        print("No CSV files found.")
-        return None
-    else:
-        return max(csv_files, key=lambda file: control_panel.sendcmd(f"MDTM {file}"))
-
-
-print("file list scanning")
-files = control_panel.nlst()
-latest_file = find_the_latest_remote_CSV(files)
-if latest_file is None:
+  csv_files = [file for file in files if file.lower().endswith('.csv')]
+  if not csv_files:
     print("No CSV files found.")
+    return None
+  else:
+      return max(csv_files, key=lambda file: control_panel.sendcmd(f"MDTM {file}"))
+
+#get latest data format of logging
+def FTP_data_initialize():
+
+  #find the latest file
+  print("file list scanning")
+  try:
+    files = control_panel.nlst()
+  except:
+    print("retrying")
+    control_panel = get_ftp()
+    files = control_panel.nlst()
+  latest_file = find_the_latest_remote_CSV(files)
+
+  #check if there is valid CSV file
+  if latest_file is None:
+      
+      print("No CSV files found.")
+      return 1,[],[]
+  
+  else:
+      
+      print("found the latest data")
+      latest_file_lines = []
+      try:
+          print(f"RETR {latest_file}")
+          control_panel.retrbinary(f'RETR {latest_file}', latest_file_lines.append)
+      except:
+          print("retrying")
+          control_panel = get_ftp()
+          control_panel.retrbinary(f'RETR {latest_file}', latest_file_lines.append)
+      if latest_file_lines:
+          first_line = latest_file_lines[0].decode().strip()
+          with open("data_format.CSV",mode='w',newline="") as f:
+              f.write(re.findall('^[^\n]*\n',first_line)[0])
+  return 0,files,latest_file
+
+#send alarm
+def send_alarm(alarm_register, device_name,value_list):
+    
+    alarm_massage_list =(
+       "","","","","",
+       "","","","","",
+       "","","","FT-1 too low "+value_list[17]+"t/h","PT-2 too low "+value_list[18]+"bar","PT_1 too low "+value_list[14]+"bar",
+       "FT-1 too high "+value_list[17]+"t/h","PT-2 too high "+value_list[18]+"bar","PT_1 too high "+value_list[18]+"bar","Leakage","Pump B Overload",     
+       "Pump A Overload","Pump B Failed to start","Pump A Failed to Start","Low Tank Level","High Tank Level",     
+       "","","Detector Level High "+value_list[20]+"m","Detector Level Low "+value_list[20]+"m","Low Pressure Shutdown","Low Pressure Max Count Fault")
+
+    for i,masse in zip(alarm_register,alarm_massage_list):
+        
+        if i == "1":
+            DAQ_inter.SendAlarm(masse, 0, device_name)
+
+            # Define the URL and headers
+            url = 'https://events.eu.pagerduty.com/v2/enqueue'
+            headers = {
+                'Content-Type': 'application/json'
+            }
+
+            # Define the data payload
+            data = {
+                "payload": {
+                    "summary": "Water System",
+                    "severity": "critical",
+                    "source": "Alarm"
+                },
+                "routing_key": "R03E7WX4WWEKD5XW0VO3VU1J54OGMKJ6",
+                "event_action": "trigger"
+            }
+
+            # Make the POST request
+            response = requests.post(url, headers=headers, data=json.dumps(data))
+
+            # Print the response
+            print("Status Code:", response.status_code)
+            print("Response Body:", response.json())
+
+    return 0
+
+
+      
+
+# update data format
+FTP_ini_status,files,latest_file = FTP_data_initialize()
+if FTP_ini_status==0:
+  print("done")
 else:
-    print("found the latest data")
-    latest_file_lines = []
-    control_panel.retrbinary(f'RETR {latest_file}', latest_file_lines.append)
-    if latest_file_lines:
-        first_line = latest_file_lines[0].decode().strip()
-        with open("data_format.CSV",mode='w',newline="") as f:
-            f.write(re.findall('^[^\n]*\n',first_line)[0])
-
-control_panel.quit()
-
-print("done")
-
-control_panel = FTP("192.168.11.3","CERN1","12345")
-control_panel.cwd('CERN')
+   sys.exit(1)
 
 
-
-
+# get latest data list
 data_list = []
 
 with open('data_format.CSV', mode='r', newline='') as csvfile:
@@ -229,21 +250,8 @@ DAQ_inter = DAQInterface(Interface_configfile)
 device_name = DAQ_inter.GetDeviceName()
 print("for "+device_name+"\n")
 
-def send_alarm(alarm_register, device_name,value_list):
-    
-    alarm_massage_list =(
-       "","","","","",
-       "","","","","",
-       "","","","FT-1 too low "+value_list[17]+"t/h","PT-2 too low "+value_list[18]+"bar","PT_1 too low "+value_list[14]+"bar",
-       "FT-1 too high "+value_list[17]+"t/h","PT-2 too high "+value_list[18]+"bar","PT_1 too high "+value_list[18]+"bar","Leakage","Pump B Overload",     
-       "Pump A Overload","Pump B Failed to start","Pump A Failed to Start","Low Tank Level","High Tank Level",     
-       "","","Detector Level High "+value_list[20]+"m","Detector Level Low "+value_list[20]+"m","Low Pressure Shutdown","Low Pressure Max Count Fault")
 
-    for i,masse in zip(alarm_register,alarm_massage_list):
-        
-        if i == "1":
-            DAQ_inter.SendAlarm(masse, 0, device_name)
-    return 0
+
 
 monitoring_data = cppyy.gbl.ToolFramework.Store()
 # clear any values from the monitoring Store
@@ -253,91 +261,84 @@ monitoring_data.Delete()
 # Of course in the specific case here we make the same series of 'Set' calls on every loop,
 # so calling 'Delete' is redundant as all keys will either be overwritten or re-created.
 
+
 signal.signal(signal.SIGINT, signal_handler)
 
-interval = 1
-time_points = generate_time_intervals(interval)
+# alarm 
+last_alarm_rigister=format(0, '016b') + format(0, '016b')
+DAQ_inter.sc_vars["Status"].SetValue("Initializing")
+
+
+#print("input S to start")
+#input()
+#print("Uploading data from PLC, Ctrl+C to stop")
+
 
 last_value_list =np.zeros(len(data_list))
 timer=0
 send_threshold=60
 print("start loop")
-
-
-last_alarm_rigister=format(0, '016b') + format(0, '016b')
-
-
-DAQ_inter.sc_vars["Status"].SetValue("Initializing")
-
-
-print("input S to start")
-input()
-print("Uploading data from PLC, Ctrl+C to stop")
-
-
 while running:
-
+  print("Loop start")
   if timer>65:
-    #print("time_out")
+    print("time_out")
     DAQ_inter.sc_vars["Status"].SetValue("TIME_OUT")
 
-  #print(timer)
-  # request_time = datetime.now() #+ timedelta(hours=1) - timedelta(minutes=1,seconds=30)
-  # seconds = request_time.second
-  # minutes = request_time.minute
-  # hours = request_time.hour
-
-  # minute_and_hour_string = f"{hours:02}:{minutes:02}"
-  # send_flag = (seconds>=59) & (minute_and_hour_string in time_points)
+  #check new PLC file
   file_count = len(files)
-  files = control_panel.nlst()
+  try:
+    files = control_panel.nlst()
+  except:
+    print("retrying")
+    control_panel = get_ftp()
+    files = control_panel.nlst()
   if len(files) != file_count:
       print("Checking for new remote file")
       latest_file = find_the_latest_remote_CSV(files)
 
-  #request_time = datetime.now() + timedelta(hours=1) - timedelta(minutes=1,seconds=14)
-  #remote_file = 'CERN/'+request_time.strftime("%m%d%H")+'.CSV'
-  #remote_file = find_the_latest_remote_CSV()
+ #get data from PLC
   local_file = 'data/' + latest_file
-
   if latest_file is None:
       print("Failed to find remote file...")
   else:
-      #print(f"Getting data from {latest_file}, saving to {local_file}")
-      
-      
       with open(local_file,mode='wb') as f:
-          control_panel.retrbinary(f'RETR {latest_file}', f.write)
+          print(f"RETR {latest_file} to {local_file}")
+          try:
+              control_panel.retrbinary(f'RETR {latest_file}', f.write)
+          except:
+              print("retrying")
+              control_panel = get_ftp()
+              control_panel.retrbinary(f'RETR {latest_file}', f.write)
+          print("RETR done")
 
-
-
-
+  #convert data into list
   value_list = find_the_latest_valid_row(data_list)
   
+  #if there is no valid data, skip this loop
   if value_list==0:
     print("latest data invalid. Ignore this second")
     time.sleep(1)
     timer = timer+1
     continue
 
+  # data time stamp
   dt = datetime.strptime(value_list[0]+value_list[1], '%d-%m-%Y%H:%M:%S')
-  
   unix_timestamp_ms = int(dt.timestamp() * 1000)
-  #print(value_list)
+  print("PLC time:", dt)
+  print("Water-Mon time:", datetime.now())
 
-  
-  
+  #choose time interval to send data according to changing rate
   if stable_operating(value_list,last_value_list):
     send_threshold=60
   else:
     send_threshold=5
   
-  
+  # get whole alarm register
   alarm_register = format(int(value_list[29]), '016b') + format(int(value_list[28]), '016b')
 
-
+  #send system status
   if timer>65:
-    #print("time_out")
+    print("!!!!time_out")
     DAQ_inter.sc_vars["Status"].SetValue("TIME_OUT")
   else:
     if int(alarm_register)!=0:
@@ -345,18 +346,15 @@ while running:
     else:
        DAQ_inter.sc_vars["Status"].SetValue("OK")
 
-
-
-
+  #send alarm if alarm register changes
   if (alarm_register!=last_alarm_rigister) :
     last_alarm_rigister = alarm_register
     if alarm_register!=format(0, '016b') + format(0, '016b'):
       send_alarm(alarm_register,device_name,value_list)
   
-  #print(timer, send_threshold)
+  #send data
   if timer>=send_threshold:
-     print(dt) 
-
+     print("sending data")
      sending_value_list = value_list[10:28]
      sending_data_list = data_list[10:28]
      sending_value_list.append(value_list[-1])
@@ -368,4 +366,4 @@ while running:
   last_value_list = value_list
   timer = timer+1
   
-  
+   
