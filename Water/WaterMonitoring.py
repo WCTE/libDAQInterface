@@ -12,6 +12,9 @@ import csv
 import signal
 import sys
 
+import requests
+import json
+
 #send data to ToolDAQ
 def send_data(timestamp,variable_name_list,values):
   
@@ -106,8 +109,16 @@ def find_the_latest_valid_row(data_list):
   else:
     return 0
 
+# FTP connection
+def get_ftp():
+    control_panel = FTP("192.168.11.3","CERN1","12345", timeout=5)
+    control_panel.cwd('CERN')
+    return control_panel
+
+control_panel = get_ftp()
+
 #find the latest PLC CSV
-def find_the_latest_remote_CSV(files,control_panel):
+def find_the_latest_remote_CSV(files):
   csv_files = [file for file in files if file.lower().endswith('.csv')]
   if not csv_files:
     print("No CSV files found.")
@@ -118,32 +129,37 @@ def find_the_latest_remote_CSV(files,control_panel):
 #get latest data format of logging
 def FTP_data_initialize():
 
-  # FTP connection
-  control_panel = FTP("192.168.11.3","CERN1","12345")
-  control_panel.cwd('CERN')
-
   #find the latest file
   print("file list scanning")
-  files = control_panel.nlst()
-  latest_file = find_the_latest_remote_CSV(files,control_panel)
+  try:
+    files = control_panel.nlst()
+  except:
+    print("retrying")
+    control_panel = get_ftp()
+    files = control_panel.nlst()
+  latest_file = find_the_latest_remote_CSV(files)
 
   #check if there is valid CSV file
   if latest_file is None:
       
       print("No CSV files found.")
-      control_panel.quit()
       return 1,[],[]
   
   else:
       
       print("found the latest data")
       latest_file_lines = []
-      control_panel.retrbinary(f'RETR {latest_file}', latest_file_lines.append)
+      try:
+          print(f"RETR {latest_file}")
+          control_panel.retrbinary(f'RETR {latest_file}', latest_file_lines.append)
+      except:
+          print("retrying")
+          control_panel = get_ftp()
+          control_panel.retrbinary(f'RETR {latest_file}', latest_file_lines.append)
       if latest_file_lines:
           first_line = latest_file_lines[0].decode().strip()
           with open("data_format.CSV",mode='w',newline="") as f:
               f.write(re.findall('^[^\n]*\n',first_line)[0])
-  control_panel.quit()
   return 0,files,latest_file
 
 #send alarm
@@ -161,6 +177,31 @@ def send_alarm(alarm_register, device_name,value_list):
         
         if i == "1":
             DAQ_inter.SendAlarm(masse, 0, device_name)
+
+            # Define the URL and headers
+            url = 'https://events.eu.pagerduty.com/v2/enqueue'
+            headers = {
+                'Content-Type': 'application/json'
+            }
+
+            # Define the data payload
+            data = {
+                "payload": {
+                    "summary": "Water System",
+                    "severity": "critical",
+                    "source": "Alarm"
+                },
+                "routing_key": "R03E7WX4WWEKD5XW0VO3VU1J54OGMKJ6",
+                "event_action": "trigger"
+            }
+
+            # Make the POST request
+            response = requests.post(url, headers=headers, data=json.dumps(data))
+
+            # Print the response
+            print("Status Code:", response.status_code)
+            print("Response Body:", response.json())
+
     return 0
 
 
@@ -175,9 +216,6 @@ else:
 
 
 # get latest data list
-control_panel = FTP("192.168.11.3","CERN1","12345")
-control_panel.cwd('CERN')
-
 data_list = []
 
 with open('data_format.CSV', mode='r', newline='') as csvfile:
@@ -231,9 +269,9 @@ last_alarm_rigister=format(0, '016b') + format(0, '016b')
 DAQ_inter.sc_vars["Status"].SetValue("Initializing")
 
 
-print("input S to start")
-input()
-print("Uploading data from PLC, Ctrl+C to stop")
+#print("input S to start")
+#input()
+#print("Uploading data from PLC, Ctrl+C to stop")
 
 
 last_value_list =np.zeros(len(data_list))
@@ -241,28 +279,22 @@ timer=0
 send_threshold=60
 print("start loop")
 while running:
-   
-  # Time Synchronization 
-  time_file="time_data.csv"
-  with open(time_file, mode="w", newline="") as file:      
-    writer = csv.writer(file)
-    now = datetime.now() 
-    writer.writerow([now.second, now.minute, now.hour, now.day, now.month, now.year])
-
-  with open(time_file, "rb") as file:
-    control_panel.storbinary(f"STOR {time_file}", file)
-
-  #time out status
+  print("Loop start")
   if timer>65:
-    #print("time_out")
+    print("time_out")
     DAQ_inter.sc_vars["Status"].SetValue("TIME_OUT")
 
   #check new PLC file
   file_count = len(files)
-  files = control_panel.nlst()
+  try:
+    files = control_panel.nlst()
+  except:
+    print("retrying")
+    control_panel = get_ftp()
+    files = control_panel.nlst()
   if len(files) != file_count:
       print("Checking for new remote file")
-      latest_file = find_the_latest_remote_CSV(files,control_panel)
+      latest_file = find_the_latest_remote_CSV(files)
 
  #get data from PLC
   local_file = 'data/' + latest_file
@@ -270,7 +302,14 @@ while running:
       print("Failed to find remote file...")
   else:
       with open(local_file,mode='wb') as f:
-          control_panel.retrbinary(f'RETR {latest_file}', f.write)
+          print(f"RETR {latest_file} to {local_file}")
+          try:
+              control_panel.retrbinary(f'RETR {latest_file}', f.write)
+          except:
+              print("retrying")
+              control_panel = get_ftp()
+              control_panel.retrbinary(f'RETR {latest_file}', f.write)
+          print("RETR done")
 
   #convert data into list
   value_list = find_the_latest_valid_row(data_list)
@@ -285,6 +324,8 @@ while running:
   # data time stamp
   dt = datetime.strptime(value_list[0]+value_list[1], '%d-%m-%Y%H:%M:%S')
   unix_timestamp_ms = int(dt.timestamp() * 1000)
+  print("PLC time:", dt)
+  print("Water-Mon time:", datetime.now())
 
   #choose time interval to send data according to changing rate
   if stable_operating(value_list,last_value_list):
@@ -313,8 +354,7 @@ while running:
   
   #send data
   if timer>=send_threshold:
-     print(dt) 
-
+     print("sending data")
      sending_value_list = value_list[10:28]
      sending_data_list = data_list[10:28]
      sending_value_list.append(value_list[-1])
